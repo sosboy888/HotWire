@@ -8,9 +8,12 @@ EditorBuildSettings:
   - enabled: 0
     path: Assets/Scenes/SampleScene.unity
     guid: 99c9720ab356a0642a771bea13969a05
-  - enabled: 1
+  - enabled: 0
     path: Assets/Samples/Ubiq/1.0.0-pre.16/Demo (XRI)/Demo.unity
     guid: 2de505d34345ab340bdde30d419b24eb
+  - enabled: 1
+    path: Assets/NetSandbox.unity
+    guid: 4462c48e6788e534298bf6e2e3f4ced8
   m_configObjects:
     Unity.XR.Oculus.Settings: {fileID: 11400000, guid: 43161c6390b8c0542bee84c4a9990411, type: 2}
     com.unity.input.settings.actions: {fileID: -944628639613478452, guid: 052faaac586de48259a63d0c4782560b, type: 3}
