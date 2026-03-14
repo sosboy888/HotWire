@@ -1,0 +1,27 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 4eb19622c9fab2e43b2e2754fc4c6de7, type: 3}
+  m_Name: Level_2_Novice
+  m_EditorClassIdentifier: Assembly-CSharp::KTANE.KTANELevelConfig
+  levelName: Novice
+  levelNumber: 2
+  description: Wires and a button. Talk carefully before cutting.
+  accentColour: {r: 0.4, g: 0.8, b: 1, a: 1}
+  timerSeconds: 360
+  maxStrikes: 3
+  wiresActive: 1
+  buttonActive: 1
+  keypadActive: 0
+  simonActive: 0
+  simonRounds: 3
+  simonFlashSeconds: 0.5
+  hardWireRules: 0
