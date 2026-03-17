@@ -19,6 +19,7 @@
 //   GameObject).  Drag Wire_0 … Wire_5 into the wireObjects array in order.
 
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.XR.Interaction.Toolkit;
@@ -84,6 +85,16 @@ namespace KTANE
         // Hard wire rules flag (set by Configure)
         private bool hardRules = false;
 
+        // Solved indicator LED (wired via Inspector / BuildKTANEScene)
+        [HideInInspector] public Renderer solvedLight;
+        private Material _solvedMat;
+
+        // Original wire transforms, saved on first Configure / Start (before any interaction)
+        private Vector3[]    _wireOrigScales    = new Vector3[6];
+        private Vector3[]    _wireOrigPositions = new Vector3[6];
+        private Quaternion[] _wireOrigRotations = new Quaternion[6];
+        private bool         _origSaved         = false;
+
         // ----- Ubiq internals -------------------------------------------
         private NetworkContext context;
 
@@ -94,6 +105,17 @@ namespace KTANE
         private void Start()
         {
             context = NetworkScene.Register(this);
+
+            // Save original transforms before any player interaction occurs.
+            SaveOriginals();
+
+            // Subscribe to game-over events so floating wires snap back at round end.
+            var gm = KTANEGameManager.Instance;
+            if (gm != null)
+            {
+                gm.OnBombDefused.AddListener(ResetAllWiresVisual);
+                gm.OnBombExploded.AddListener(ResetAllWiresVisual);
+            }
 
             // Determine correct wire only on the Defuser (deterministic seed
             // based on object's scene path so both clients agree if we choose
@@ -174,7 +196,9 @@ namespace KTANE
             for (int i = 0; i < msg.wiresCut.Length && i < wireObjects.Length; i++)
             {
                 if (msg.wiresCut[i] && !WiresCut[i])
-                    ApplyCutVisual(i);
+                    ApplyCutVisual(i);       // newly cut
+                else if (!msg.wiresCut[i] && WiresCut[i])
+                    RestoreWireVisual(i);    // wrong-cut wire snapped back
             }
 
             WiresCut    = msg.wiresCut;
@@ -192,26 +216,31 @@ namespace KTANE
             isActive  = active;
             hardRules = useHardRules;
 
-            // Show/hide wire GameObjects based on whether this module is in the level
+            // Show/hide wire GameObjects and the solved indicator
             foreach (var wire in wireObjects)
                 if (wire != null) wire.SetActive(active);
+            if (solvedLight != null) solvedLight.gameObject.SetActive(active);
 
             if (!active) return;
 
             // Reset state
             WiresCut  = new bool[6];
             IsSolved  = false;
+            SetSolvedLight(false);
 
             // Re-enable grab interactables that may have been disabled by a previous play
             foreach (var grab in grabInteractables)
                 if (grab != null) grab.enabled = true;
 
-            // Restore wire scale (in case a previous round shrunk them)
-            foreach (var wire in wireObjects)
+            // Save originals on first configure (covers case where Configure
+            // runs before Start), then restore transforms for every configure.
+            SaveOriginals();
+            for (int i = 0; i < wireObjects.Length; i++)
             {
-                if (wire == null) continue;
-                var ls = wire.transform.localScale;
-                wire.transform.localScale = new Vector3(0.013f, ls.y, 0.013f);
+                if (wireObjects[i] == null) continue;
+                wireObjects[i].transform.localPosition = _wireOrigPositions[i];
+                wireObjects[i].transform.localRotation = _wireOrigRotations[i];
+                wireObjects[i].transform.localScale    = _wireOrigScales[i];
             }
 
             // Re-determine correct wire with shared seed
@@ -247,16 +276,81 @@ namespace KTANE
             if (solved)
             {
                 IsSolved = true;
+                SetSolvedLight(true);
                 gm.SolveModule();
+                KTANESoundManager.Instance?.PlaySolve();
                 Debug.Log("[WiresModule] Correct wire cut – module solved.", this);
             }
             else
             {
                 gm.AddStrike();
+                KTANESoundManager.Instance?.PlayWrong();
                 Debug.Log($"[WiresModule] Wrong wire cut (index={index}). Strike!", this);
+                // Snap the wire back after a short delay so the player can try again.
+                StartCoroutine(RestoreWireAfterDelay(index));
             }
 
             BroadcastState(causedStrike, index);
+        }
+
+        private IEnumerator RestoreWireAfterDelay(int index)
+        {
+            yield return new WaitForSeconds(1.0f);
+
+            // Abort if the game is no longer active (bomb exploded/defused).
+            var gm = KTANEGameManager.Instance;
+            if (gm != null && gm.CurrentState != GameState.Active) yield break;
+            if (IsSolved) yield break;
+
+            WiresCut[index] = false;
+            RestoreWireVisual(index);
+            BroadcastState(false, -1);
+        }
+
+        private void RestoreWireVisual(int index)
+        {
+            if (index < 0 || index >= wireObjects.Length || wireObjects[index] == null) return;
+
+            if (_origSaved)
+            {
+                wireObjects[index].transform.localPosition = _wireOrigPositions[index];
+                wireObjects[index].transform.localRotation = _wireOrigRotations[index];
+                wireObjects[index].transform.localScale    = _wireOrigScales[index];
+            }
+
+            var grab = wireObjects[index].GetComponent<XRGrabInteractable>();
+            if (grab != null) grab.enabled = true;
+        }
+
+        /// <summary>
+        /// Snap all wires back to their original positions without re-enabling
+        /// grab.  Called when the bomb explodes or is defused so no wires are
+        /// left floating in the air between rounds.
+        /// </summary>
+        private void ResetAllWiresVisual()
+        {
+            if (!_origSaved) return;
+            for (int i = 0; i < wireObjects.Length; i++)
+            {
+                if (wireObjects[i] == null) continue;
+                wireObjects[i].transform.localPosition = _wireOrigPositions[i];
+                wireObjects[i].transform.localRotation = _wireOrigRotations[i];
+                wireObjects[i].transform.localScale    = _wireOrigScales[i];
+                // Do NOT re-enable the grab — game is over.
+            }
+        }
+
+        private void SaveOriginals()
+        {
+            if (_origSaved) return;
+            _origSaved = true;
+            for (int i = 0; i < wireObjects.Length; i++)
+            {
+                if (wireObjects[i] == null) continue;
+                _wireOrigPositions[i] = wireObjects[i].transform.localPosition;
+                _wireOrigRotations[i] = wireObjects[i].transform.localRotation;
+                _wireOrigScales[i]    = wireObjects[i].transform.localScale;
+            }
         }
 
         private void BroadcastState(bool causedStrike, int lastCut)
@@ -343,16 +437,29 @@ namespace KTANE
             Debug.Log($"[WiresModule] Correct wire index: {CorrectWire}", this);
         }
 
-        /// <summary>Visual feedback: hide or collapse the wire mesh to show it cut.</summary>
+        /// <summary>Visual feedback: collapse the wire mesh to show it cut.</summary>
         private void ApplyCutVisual(int index)
         {
             if (wireObjects[index] == null) return;
             // Disable the interactable so it can't be grabbed again
             var grab = wireObjects[index].GetComponent<XRGrabInteractable>();
             if (grab != null) grab.enabled = false;
-            // Scale it down to indicate cutting
-            wireObjects[index].transform.localScale =
-                new Vector3(0.01f, wireObjects[index].transform.localScale.y, 0.01f);
+            // Shrink to near-invisible using the saved original scale as reference
+            var orig = (_wireOrigScales[index] != Vector3.zero)
+                ? _wireOrigScales[index]
+                : wireObjects[index].transform.localScale;
+            wireObjects[index].transform.localScale = orig * 0.08f;
+        }
+
+        private void SetSolvedLight(bool on)
+        {
+            if (solvedLight == null) return;
+            if (_solvedMat == null)
+            {
+                _solvedMat = solvedLight.material;
+                _solvedMat.EnableKeyword("_EMISSION");
+            }
+            _solvedMat.SetColor("_EmissionColor", on ? new Color(0f, 2f, 0f) : Color.black);
         }
     }
 }

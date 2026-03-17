@@ -1,19 +1,23 @@
 // ManualTablet.cs
-// A physical VR-grabbable tablet displaying simple plain-English module rules.
-// Both players can pick it up and read it.
+// Physical VR-grabbable tablet showing the bomb defusal manual.
 //
-// SETUP:
-//   The BuildKTANEScene editor tool places this automatically.
-//   Or add this script to any GameObject – the tablet body, collider,
-//   XRGrabInteractable, and World-Space Canvas are all built in Awake().
+// PDF MODE (preferred):
+//   Place PNG textures named page_000.png … page_NNN.png inside
+//   Assets/Resources/ManualPages/ using:
+//     Tools → KTANE → Import Manual PDF Pages
+//   The tablet will automatically switch to PDF mode and display the images.
 //
-// PAGES (13 total):
-//   1.Cover  2.Timer-1  3.Timer-2  4.Wires-1  5.Wires-2  6.Wires-3
-//   7.Button-1  8.Button-2  9.Keypad-1  10.Keypad-2  11.Simon-1
-//   12.Simon-2  13.Simon-3
+// TEXT MODE (fallback):
+//   If no PDF textures are found the tablet falls back to the built-in
+//   plain-text rule pages.
+//
+// The tablet is 1.5× larger than the original design for better VR readability.
 
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
+using UnityEngine.EventSystems;
+using UnityEngine.XR.Interaction.Toolkit.UI;
 using TMPro;
 using UnityEngine.Events;
 using UnityEngine.XR.Interaction.Toolkit;
@@ -23,7 +27,7 @@ namespace KTANE
 {
     public class ManualTablet : MonoBehaviour
     {
-        // ── Page content ─────────────────────────────────────────────────────
+        // ── Text-mode page content ────────────────────────────────────────────
         private static readonly string[] PageTitles =
         {
             "FIELD REFERENCE MANUAL",   // 0
@@ -66,8 +70,6 @@ namespace KTANE
             "value in format MM:SS.\n\n" +
             "  MM = remaining minutes\n" +
             "  SS = remaining seconds\n\n" +
-            "The colon is a time separator. It is NOT a\n" +
-            "decimal delimiter.\n\n" +
             "1.1 LAST DIGIT\n\n" +
             "The LAST DIGIT is defined as the rightmost\n" +
             "numeric character of the display — the units\n" +
@@ -116,7 +118,6 @@ namespace KTANE
             "CUT — deliberate severing of the conductive\n" +
             "wire body. Partial compression or bending\n" +
             "does NOT constitute a valid cut.\n\n" +
-            "LAST DIGIT — defined in Section 1.1.\n\n" +
             "2.2 PROCEDURAL RULE ORDER\n\n" +
             "Evaluate rules in strict sequential order.\n" +
             "Apply only the FIRST rule whose conditions\n" +
@@ -176,13 +177,9 @@ namespace KTANE
             "execute a TAP or a HOLD.\n\n" +
             "3.1 HOLD vs TAP DETERMINATION\n\n" +
             "VALID HOLD — button depressed and maintained\n" +
-            "continuously for MORE than 0.5 seconds.\n" +
-            "Release timing is determined relative to\n" +
-            "the timer display.\n\n" +
+            "continuously for MORE than 0.5 seconds.\n\n" +
             "VALID TAP — button pressed and released\n" +
-            "in UNDER 0.5 seconds.\n" +
-            "Any press exceeding this threshold becomes\n" +
-            "a hold, regardless of intent.\n\n" +
+            "in UNDER 0.5 seconds.\n\n" +
             "3.2 PRIMARY CONDITIONAL PROCEDURE\n\n" +
             "BLUE button:\n" +
             "  (a) Initiate a HOLD.\n" +
@@ -207,33 +204,31 @@ namespace KTANE
             "  Timer 03:41  →  digits: 0, 3, 4, 1\n" +
             "  Release conditions for 4 AND 1 are both\n" +
             "  satisfied simultaneously.\n\n" +
-            "3.4 LED STRIP NOTE [²]\n\n" +
-            "Certain devices contain an LED strip colour\n" +
-            "indicator adjacent to the button assembly.\n\n" +
-            "The LED colour merely CONFIRMS the button\n" +
-            "colour already visible to the operator.\n" +
+            "3.4 LED STRIP NOTE\n\n" +
+            "The LED colour confirms the button colour.\n" +
             "It provides no additional operational data\n" +
             "and should not be used as the primary\n" +
             "colour identification source.",
 
             // ── 8  KEYPAD 1/2 ─────────────────────────────────────────────────
+            // Symbol table now uses the actual Unicode characters from KeypadSymbols.
             "4.0 OVERVIEW\n\n" +
-            "The keypad has 4 keys, each displaying a\n" +
-            "symbolic character. Only one press sequence\n" +
-            "is valid. Symbols must be identified by\n" +
-            "SHAPE, not by colour or brightness.\n\n" +
+            "Four keys, each labelled with a unique symbol.\n" +
+            "Identify symbols by SHAPE. Find the column\n" +
+            "containing all four of your symbols, then\n" +
+            "press keys in that column's top-to-bottom order.\n\n" +
             "4.1 SYMBOL TABLE — COLUMNS A, B, C\n\n" +
-            "  Row   Col A         Col B          Col C\n" +
-            "   1   Hollow Star   Cursive Q      Trident\n" +
-            "   2   Forked Rune   Broken Circle  Ladder Glyph\n" +
-            "   3   Spiral Eye    Dbl Diamond    Cursive Q\n" +
-            "   4   Crescent Loop Crown Symbol   Broken Circle\n\n" +
+            "  Row  Col A  Col B  Col C\n" +
+            "   1    ☆      Ж      ◈\n" +
+            "   2    ψ      Ħ      ♛\n" +
+            "   3    Θ      ⊕      ∂\n" +
+            "   4    Ω      ↩      ⊙\n\n" +
             "4.2 SYMBOL TABLE — COLUMNS D, E, F\n\n" +
-            "  Row   Col D         Col E          Col F\n" +
-            "   1   Spiral Eye    Hooked Arrow   Dbl Diamond\n" +
-            "   2   Hollow Star   Crescent Loop  Trident\n" +
-            "   3   Crown Symbol  Forked Rune    Spiral Eye\n" +
-            "   4   Trident       Ladder Glyph   Cursive Q",
+            "  Row  Col D  Col E  Col F\n" +
+            "   1    Ʌ      Þ      Ξ\n" +
+            "   2    Ŋ      Ð      Φ\n" +
+            "   3    Ɋ      ꝏ      ☊\n" +
+            "   4    Ʃ      Δ      ℵ",
 
             // ── 9  KEYPAD 2/2 ─────────────────────────────────────────────────
             "4.3 ORDER DETERMINATION PROCEDURE\n\n" +
@@ -276,9 +271,7 @@ namespace KTANE
             "!! WARNING !!\n" +
             "Failure to reproduce the sequence correctly\n" +
             "RESETS only the current round's input.\n" +
-            "The sequence itself does not change.\n" +
-            "Operators must replay the full sequence\n" +
-            "displayed during that round.",
+            "The sequence itself does not change.",
 
             // ── 11  SIMON 2/3 ─────────────────────────────────────────────────
             "5.2 STRIKE-DEPENDENT COLOUR CIPHER\n\n" +
@@ -320,10 +313,16 @@ namespace KTANE
         };
 
         // ── Runtime ──────────────────────────────────────────────────────────
-        private int currentPage = 0;
-        private TextMeshProUGUI titleText;
-        private TextMeshProUGUI bodyText;
-        private TextMeshProUGUI pageIndicator;
+        private int              currentPage = 0;
+        private TextMeshProUGUI  titleText;
+        private TextMeshProUGUI  bodyText;
+        private TextMeshProUGUI  pageIndicator;
+        private GameObject       dividerGO;
+
+        // PDF mode
+        private bool         _pdfMode      = false;
+        private Texture2D[]  _pageTextures;
+        private RawImage     _pdfImage;
 
         // ================================================================
         // Unity lifecycle
@@ -331,45 +330,58 @@ namespace KTANE
 
         private void Awake()
         {
+            // Attempt to load PDF page textures (placed in Assets/Resources/ManualPages/).
+            // We load sequentially by name so order is always correct.
+            var texList = new List<Texture2D>();
+            for (int i = 0; i < 200; i++)
+            {
+                var t = Resources.Load<Texture2D>($"ManualPages/page_{i:D3}");
+                if (t == null) break;
+                texList.Add(t);
+            }
+            if (texList.Count > 0)
+            {
+                _pageTextures = texList.ToArray();
+                _pdfMode      = true;
+            }
+
             BuildTabletBody();
             BuildTabletCanvas();
             ShowPage(0);
         }
 
         // ================================================================
-        // Build physical tablet
+        // Build physical tablet  (1.5× larger than original design)
         // ================================================================
 
         private void BuildTabletBody()
         {
-            // Main slab
+            // Main slab — 40.5 × 55.5 cm  (was 27 × 37 cm, × 1.5)
             var body = GameObject.CreatePrimitive(PrimitiveType.Cube);
             body.name = "TabletBody";
             body.transform.SetParent(transform, false);
             body.transform.localPosition = Vector3.zero;
-            body.transform.localScale    = new Vector3(0.20f, 0.28f, 0.012f);
+            body.transform.localScale    = new Vector3(0.405f, 0.555f, 0.021f);
             ApplyColour(body, new Color(0.12f, 0.12f, 0.15f));
-            Destroy(body.GetComponent<Collider>()); // root collider handles it
+            Destroy(body.GetComponent<Collider>());
 
-            // Screen area (slightly raised, darker)
+            // Screen area
             var screen = GameObject.CreatePrimitive(PrimitiveType.Cube);
             screen.name = "TabletScreen";
             screen.transform.SetParent(transform, false);
-            screen.transform.localPosition = new Vector3(0f, 0f, -0.007f);
-            screen.transform.localScale    = new Vector3(0.185f, 0.265f, 0.001f);
+            screen.transform.localPosition = new Vector3(0f, 0f, -0.009f);
+            screen.transform.localScale    = new Vector3(0.378f, 0.528f, 0.0015f);
             ApplyColour(screen, new Color(0.04f, 0.04f, 0.07f));
             Destroy(screen.GetComponent<Collider>());
 
-            // Collider on root (covers whole body)
             var bc  = gameObject.AddComponent<BoxCollider>();
-            bc.size = new Vector3(0.20f, 0.28f, 0.025f);
+            bc.size = new Vector3(0.405f, 0.555f, 0.045f);
 
-            // XRGrabInteractable so either player can pick it up
             var grab = gameObject.AddComponent<XRGrabInteractable>();
             var rb   = grab.GetComponent<Rigidbody>();
             if (rb != null)
             {
-                rb.useGravity    = false;   // floats until grabbed
+                rb.useGravity    = false;
                 rb.isKinematic   = false;
                 rb.interpolation = RigidbodyInterpolation.Interpolate;
                 rb.mass          = 0.3f;
@@ -377,60 +389,96 @@ namespace KTANE
         }
 
         // ================================================================
-        // Build canvas with page text
+        // Build canvas with page text + PDF image area
         // ================================================================
 
         private void BuildTabletCanvas()
         {
             var canvasGO = new GameObject("TabletCanvas");
             canvasGO.transform.SetParent(transform, false);
-            // Float just in front of the screen face (z is local, -z = forward)
-            canvasGO.transform.localPosition = new Vector3(0f, 0f, -0.0075f);
+            // 1.5× z offset (body front face now at ~-0.0105, push clear)
+            canvasGO.transform.localPosition = new Vector3(0f, 0f, -0.0225f);
             canvasGO.transform.localRotation = Quaternion.identity;
 
             var canvas = canvasGO.AddComponent<Canvas>();
-            canvas.renderMode = RenderMode.WorldSpace;
+            canvas.renderMode   = RenderMode.WorldSpace;
+            canvas.sortingOrder = 5;
 
-            // Canvas size: 360 × 520 units; scaled so 1 unit ≈ 0.5 mm
+            // Canvas size unchanged in canvas units (380 × 560), but scale ×1.5
+            // → world size ≈ 37 cm × 54 cm
             var rt = canvasGO.GetComponent<RectTransform>();
-            rt.sizeDelta = new Vector2(360f, 520f);
-            canvasGO.transform.localScale = Vector3.one * 0.0005f;
+            rt.sizeDelta = new Vector2(380f, 560f);
+            canvasGO.transform.localScale = Vector3.one * 0.0009750f; // was 0.00065 × 1.5
 
             canvasGO.AddComponent<CanvasScaler>();
-            canvasGO.AddComponent<GraphicRaycaster>();
+            canvasGO.AddComponent<TrackedDeviceGraphicRaycaster>();
 
-            // Semi-transparent dark background
+            // Dark background
             AddImage(canvasGO.transform, "BG", new Color(0.03f, 0.03f, 0.07f, 0.97f), true);
 
-            // ── Title ─────────────────────────────────────────────────────────
+            // ── Title (text mode only) ────────────────────────────────────────
             titleText = AddTMP(canvasGO.transform, "Title",
-                "", 22, FontStyles.Bold,
+                "", 26, FontStyles.Bold,
                 new Color(1f, 0.85f, 0.2f), TextAlignmentOptions.Center,
-                new Vector2(0f, 228f), new Vector2(340f, 34f));
+                new Vector2(0f, 248f), new Vector2(360f, 40f));
 
-            // Thin divider
-            AddImage(canvasGO.transform, "Divider",
-                new Color(0.35f, 0.35f, 0.35f), false,
-                new Vector2(0f, 207f), new Vector2(340f, 1.5f));
+            // Thin divider (text mode only)
+            dividerGO = new GameObject("Divider");
+            dividerGO.transform.SetParent(canvasGO.transform, false);
+            var divImg = dividerGO.AddComponent<Image>();
+            divImg.color = new Color(0.35f, 0.35f, 0.35f);
+            var divRT  = dividerGO.GetComponent<RectTransform>();
+            divRT.anchoredPosition = new Vector2(0f, 224f);
+            divRT.sizeDelta        = new Vector2(360f, 1.5f);
 
-            // ── Body ──────────────────────────────────────────────────────────
+            // ── Body text (text mode only) ────────────────────────────────────
             bodyText = AddTMP(canvasGO.transform, "Body",
-                "", 13.5f, FontStyles.Normal,
+                "", 16f, FontStyles.Normal,
                 new Color(0.90f, 0.90f, 0.90f), TextAlignmentOptions.TopLeft,
-                new Vector2(2f, 10f), new Vector2(330f, 385f));
+                new Vector2(4f, 14f), new Vector2(358f, 430f));
             bodyText.enableWordWrapping = true;
+            bodyText.enableAutoSizing   = true;
+            bodyText.fontSizeMin        = 9f;
+            bodyText.fontSizeMax        = 16f;
+            bodyText.overflowMode       = TextOverflowModes.Truncate;
+
+            // ── PDF image area (PDF mode only, starts hidden) ─────────────────
+            var imgGO = new GameObject("PDFPage");
+            imgGO.transform.SetParent(canvasGO.transform, false);
+            _pdfImage = imgGO.AddComponent<RawImage>();
+            _pdfImage.color = Color.white;
+            var imgRT = imgGO.GetComponent<RectTransform>();
+            // Fill almost the entire canvas leaving the bottom nav bar.
+            // y=10, h=500 → top=260, bottom=-240 (nav buttons are at y=-252)
+            imgRT.anchoredPosition = new Vector2(0f, 10f);
+            imgRT.sizeDelta        = new Vector2(370f, 500f);
+            // Preserve PDF page aspect ratio (fit inside rect, no stretch)
+            var arf = imgGO.AddComponent<AspectRatioFitter>();
+            arf.aspectMode = AspectRatioFitter.AspectMode.FitInParent;
+            arf.aspectRatio = 0.707f; // A4 portrait default; overridden per-page below
+
+            imgGO.SetActive(false); // hidden until PDF mode enabled
+
+            // In PDF mode: hide title + divider + bodyText; show pdfImage.
+            if (_pdfMode)
+            {
+                titleText.gameObject.SetActive(false);
+                dividerGO.SetActive(false);
+                bodyText.gameObject.SetActive(false);
+                imgGO.SetActive(true);
+            }
 
             // ── Page indicator ────────────────────────────────────────────────
             pageIndicator = AddTMP(canvasGO.transform, "PageNum",
-                "", 12f, FontStyles.Normal,
+                "", 14f, FontStyles.Normal,
                 new Color(0.45f, 0.45f, 0.45f), TextAlignmentOptions.Center,
-                new Vector2(0f, -232f), new Vector2(160f, 22f));
+                new Vector2(0f, -252f), new Vector2(180f, 26f));
 
             // ── Prev / Next buttons ───────────────────────────────────────────
             AddNavButton(canvasGO.transform, "BtnPrev", "◄ PREV",
-                new Vector2(-110f, -232f), new Vector2(90f, 26f), OnPrevPage);
+                new Vector2(-120f, -252f), new Vector2(100f, 30f), OnPrevPage);
             AddNavButton(canvasGO.transform, "BtnNext", "NEXT ►",
-                new Vector2(110f, -232f), new Vector2(90f, 26f), OnNextPage);
+                new Vector2(120f, -252f), new Vector2(100f, 30f), OnNextPage);
         }
 
         // ================================================================
@@ -439,15 +487,45 @@ namespace KTANE
 
         private void ShowPage(int index)
         {
-            currentPage = Mathf.Clamp(index, 0, PageTitles.Length - 1);
-            if (titleText     != null) titleText.text = PageTitles[currentPage];
-            if (bodyText      != null) bodyText.text  = PageBodies[currentPage];
+            int pageCount = _pdfMode ? _pageTextures.Length : PageTitles.Length;
+            currentPage = Mathf.Clamp(index, 0, pageCount - 1);
+
+            if (_pdfMode)
+            {
+                if (_pdfImage != null)
+                {
+                    _pdfImage.texture = _pageTextures[currentPage];
+                    // Update aspect ratio fitter to match actual page dimensions
+                    var arf = _pdfImage.GetComponent<AspectRatioFitter>();
+                    if (arf != null && _pageTextures[currentPage] != null)
+                    {
+                        var tex = _pageTextures[currentPage];
+                        if (tex.height > 0)
+                            arf.aspectRatio = (float)tex.width / tex.height;
+                    }
+                }
+            }
+            else
+            {
+                if (titleText     != null) titleText.text = PageTitles[currentPage];
+                if (bodyText      != null) bodyText.text  = PageBodies[currentPage];
+            }
+
             if (pageIndicator != null)
-                pageIndicator.text = $"{currentPage + 1} / {PageTitles.Length}";
+                pageIndicator.text = $"{currentPage + 1} / {pageCount}";
         }
 
-        private void OnPrevPage() => ShowPage(currentPage - 1);
-        private void OnNextPage() => ShowPage(currentPage + 1);
+        private void OnPrevPage()
+        {
+            KTANESoundManager.Instance?.PlayPageTurn();
+            ShowPage(currentPage - 1);
+        }
+
+        private void OnNextPage()
+        {
+            KTANESoundManager.Instance?.PlayPageTurn();
+            ShowPage(currentPage + 1);
+        }
 
         // ================================================================
         // UI factory helpers

@@ -67,11 +67,22 @@ namespace KTANE
         public bool         IsSolved { get; private set; }
         public bool         IsHeld   { get; private set; }
 
+        [Header("Optional — button face renderer to colour-tint")]
+        public Renderer buttonRenderer;
+
         // ----- Ubiq internals -------------------------------------------
         private NetworkContext context;
 
+        // Solved indicator LED (wired via Inspector / BuildKTANEScene)
+        [HideInInspector] public Renderer solvedLight;
+        private Material _solvedMat;
+
         // LED material instance
         private Material ledMat;
+        private Material buttonMat;
+
+        // Tracks whether Configure() was called before Start()
+        private bool _configured = false;
 
         // When the button was pressed (used to detect quick tap vs hold)
         private float pressTime;
@@ -93,20 +104,18 @@ namespace KTANE
         {
             context = NetworkScene.Register(this);
 
-            // Randomise button colour on the Defuser; broadcast to Expert.
-            var gm = KTANEGameManager.Instance;
-            if (gm != null && gm.IsLocalDefuser)
-            {
-                Colour = (ButtonColour)UnityEngine.Random.Range(0, 4);
-                BroadcastState("init", false, false);
-            }
-
             // Set up LED material instance
             if (buttonLED != null)
             {
                 ledMat = buttonLED.material;
                 ledMat.EnableKeyword("_EMISSION");
                 SetLED(0);
+            }
+
+            // Set up button face material for colour tinting
+            if (buttonRenderer != null)
+            {
+                buttonMat = buttonRenderer.material;
             }
 
             // Wire up XR events
@@ -118,6 +127,17 @@ namespace KTANE
             else
             {
                 Debug.LogWarning("[ButtonModule] buttonInteractable not assigned.", this);
+            }
+
+            var gm = KTANEGameManager.Instance;
+            if (gm != null && gm.IsLocalDefuser)
+            {
+                // Only randomise if Configure() hasn't already set the colour.
+                if (!_configured)
+                    Colour = (ButtonColour)UnityEngine.Random.Range(0, 4);
+
+                ApplyButtonColour();
+                BroadcastState("init", false, false);
             }
         }
 
@@ -168,9 +188,10 @@ namespace KTANE
             IsHeld    = true;
             pressTime = Time.time;
 
-            // Visual feedback: colour LED
+            // Visual + audio feedback on press
             int led = LedIndexForColour(Colour);
             SetLED(led);
+            KTANESoundManager.Instance?.PlayCorrect();
 
             BroadcastState("press", true, false);
             StartCoroutine(AnimateButton(true));
@@ -194,14 +215,17 @@ namespace KTANE
             if (solved)
             {
                 IsSolved = true;
+                SetSolvedLight(true);
                 gm.SolveModule();
                 SetLED(0);
+                KTANESoundManager.Instance?.PlaySolve();
                 Debug.Log("[ButtonModule] Button released correctly – solved.", this);
             }
             else
             {
                 gm.AddStrike();
                 SetLED(0);
+                KTANESoundManager.Instance?.PlayWrong();
                 Debug.Log("[ButtonModule] Wrong release timing – strike!", this);
             }
 
@@ -260,25 +284,43 @@ namespace KTANE
 
         public void Configure(bool active, int seed)
         {
-            isActive = active;
+            isActive     = active;
+            _configured  = true;
 
             // Show/hide button GameObjects
             if (buttonInteractable != null)
                 buttonInteractable.gameObject.SetActive(active);
             if (buttonLED != null)
                 buttonLED.gameObject.SetActive(active);
+            if (solvedLight != null) solvedLight.gameObject.SetActive(active);
 
             if (!active) return;
 
             IsSolved = false;
             IsHeld   = false;
-            SetLED(0);
+            SetSolvedLight(false);
 
             UnityEngine.Random.InitState(seed);
             Colour = (ButtonColour)UnityEngine.Random.Range(0, 4);
 
-            BroadcastState("init", false, false);
+            ApplyButtonColour();
+            // BroadcastState is a no-op here (context not registered yet);
+            // Start() will broadcast after context is ready.
             Debug.Log($"[ButtonModule] Configured: active={active} colour={Colour} seed={seed}", this);
+        }
+
+        private void ApplyButtonColour()
+        {
+            if (buttonMat == null) return;
+            Color col = Colour switch
+            {
+                ButtonColour.Red    => new Color(0.85f, 0.12f, 0.12f),
+                ButtonColour.Blue   => new Color(0.12f, 0.30f, 0.90f),
+                ButtonColour.Yellow => new Color(0.95f, 0.85f, 0.05f),
+                _                  => new Color(0.90f, 0.90f, 0.90f),  // White
+            };
+            if (buttonMat.HasProperty("_BaseColor")) buttonMat.SetColor("_BaseColor", col);
+            else                                     buttonMat.SetColor("_Color",     col);
         }
 
         // ================================================================
@@ -297,6 +339,17 @@ namespace KTANE
                 causedStrike = struck,
                 ledColour    = held ? LedIndexForColour(Colour) : 0
             });
+        }
+
+        private void SetSolvedLight(bool on)
+        {
+            if (solvedLight == null) return;
+            if (_solvedMat == null)
+            {
+                _solvedMat = solvedLight.material;
+                _solvedMat.EnableKeyword("_EMISSION");
+            }
+            _solvedMat.SetColor("_EmissionColor", on ? new Color(0f, 2f, 0f) : Color.black);
         }
 
         private int LedIndexForColour(ButtonColour col)

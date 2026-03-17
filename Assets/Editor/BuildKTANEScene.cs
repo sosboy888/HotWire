@@ -24,9 +24,11 @@ using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.Rendering;
-using UnityEngine.UI;
-using TMPro;
+using UnityEngine.EventSystems;
+using UnityEngine.XR.Interaction.Toolkit.UI;
 using KTANE;
+using UnityEngine.XR.Interaction.Toolkit;
+using UnityEngine.XR.Interaction.Toolkit.Feedback;
 using UnityEngine.XR.Interaction.Toolkit.Interactables;
 
 public static class BuildKTANEScene
@@ -75,11 +77,18 @@ public static class BuildKTANEScene
         //    Position at Defuser's side of the table, facing the bomb.
         InstantiateXrRig(ubiqRoot);
 
+        // ── 7b. EventSystem with XR UI Input Module ───────────────────────────
+        //    Required for Quest controllers to interact with World-Space UI.
+        CreateXrEventSystem();
+
         // ── 8. AutoRoomJoiner ─────────────────────────────────────────────────
         CreateAutoRoomJoiner();
 
         // ── 9. KTANEGameManager ───────────────────────────────────────────────
         var gmGO = CreateGameManager();
+
+        // ── 9b. KTANESoundManager ─────────────────────────────────────────────
+        CreateSoundManager();
 
         // ── 10. Module GameObjects (children of BombMount) ────────────────────
         var timerMod   = CreateModuleGO<TimerModule>  (bombMount, "TimerModule");
@@ -88,8 +97,8 @@ public static class BuildKTANEScene
         var keypadMod  = CreateModuleGO<KeypadModule> (bombMount, "KeypadModule");
         var simonMod   = CreateModuleGO<SimonModule>  (bombMount, "SimonModule");
 
-        // ── 11. Expert World-Space Canvas + ExpertUIManager ───────────────────
-        CreateExpertUI(timerMod, wiresMod, buttonMod, keypadMod, simonMod);
+        // ── 11. ExpertUIManager (self-building canvas — no wiring needed) ────
+        CreateExpertUI();
 
         // ── 12. Place bomb ────────────────────────────────────────────────────
         TryPlaceBombFbx(bombMount);
@@ -212,8 +221,10 @@ public static class BuildKTANEScene
         // The bomb FBX (or placeholder) will be a child of this.
         var mountGO = new GameObject("BombMount");
         mountGO.transform.SetParent(tableRoot.transform, false);
-        // Bomb sits on the table surface: y = tabletop y + half thickness
-        mountGO.transform.localPosition = new Vector3(0f, 0.8f, 0f);
+        // Table top surface is at y = 0.8 (TableTop localPos 0.775 + half-thickness 0.025).
+        // KTANEBomb body is 0.14 m tall, centered at origin → bottom at -0.07 m bomb-local.
+        // So mount must be at y = 0.8 + 0.07 = 0.87 to place the bomb bottom on the table.
+        mountGO.transform.localPosition = new Vector3(0f, 0.87f, 0f);
 
         return mountGO.transform;
     }
@@ -273,7 +284,34 @@ public static class BuildKTANEScene
         if (ubiqRoot != null)
             go.transform.SetParent(ubiqRoot.transform, true);
 
+        // Disable hover haptics on all SimpleHapticFeedback components so pointing
+        // at canvases doesn't cause continuous vibration. Select haptics are kept.
+        foreach (var hf in go.GetComponentsInChildren<SimpleHapticFeedback>(true))
+        {
+            hf.playHoverEntered  = false;
+            hf.playHoverExited   = false;
+            hf.playHoverCanceled = false;
+        }
+
         Debug.Log("[BuildKTANEScene] XR Origin (XR Rig) placed at Defuser position.");
+    }
+
+    // ── 7b ─────────────────────────────────────────────────────────────────────
+    private static void CreateXrEventSystem()
+    {
+        // XR controllers need XRUIInputModule (not the default StandaloneInputModule)
+        // to ray-cast against World-Space canvases and fire button clicks + haptics.
+        // Check first so rebuilding the scene doesn't create duplicates.
+        if (Object.FindFirstObjectByType<EventSystem>() != null)
+        {
+            Debug.Log("[BuildKTANEScene] EventSystem already present – skipping.");
+            return;
+        }
+
+        var go = new GameObject("EventSystem");
+        go.AddComponent<EventSystem>();
+        go.AddComponent<XRUIInputModule>();
+        Debug.Log("[BuildKTANEScene] EventSystem + XRUIInputModule created.");
     }
 
     // ── 8 ──────────────────────────────────────────────────────────────────────
@@ -307,6 +345,14 @@ public static class BuildKTANEScene
         return go;
     }
 
+    // ── 9b ─────────────────────────────────────────────────────────────────────
+    private static void CreateSoundManager()
+    {
+        var go = new GameObject("KTANESoundManager");
+        go.AddComponent<KTANESoundManager>();
+        Debug.Log("[BuildKTANEScene] KTANESoundManager created.");
+    }
+
     // ── 10 helper ─────────────────────────────────────────────────────────────
     private static T CreateModuleGO<T>(Transform parent, string goName)
         where T : MonoBehaviour
@@ -318,105 +364,14 @@ public static class BuildKTANEScene
     }
 
     // ── 11 ────────────────────────────────────────────────────────────────────
-    private static void CreateExpertUI(
-        TimerModule  timer,
-        WiresModule  wires,
-        ButtonModule button,
-        KeypadModule keypad,
-        SimonModule  simon)
+    private static void CreateExpertUI()
     {
-        // Root canvas ─────────────────────────────────────────────────────────
-        var canvasGO = new GameObject("ExpertUI");
-
-        // Place it on the Expert's side of the table, at head height, facing the
-        // Defuser side (i.e. looking toward -Z).
-        canvasGO.transform.position = new Vector3(0f, 1.55f, 1.3f);
-        canvasGO.transform.rotation = Quaternion.Euler(0f, 180f, 0f); // face south
-
-        var canvas = canvasGO.AddComponent<Canvas>();
-        canvas.renderMode = RenderMode.WorldSpace;
-
-        var cr = canvasGO.GetComponent<RectTransform>();
-        cr.sizeDelta = new Vector2(600f, 800f);
-        canvasGO.transform.localScale = Vector3.one * 0.001f; // 0.6 m × 0.8 m
-
-        canvasGO.AddComponent<CanvasScaler>();
-        canvasGO.AddComponent<GraphicRaycaster>();
-
-        // Background panel ────────────────────────────────────────────────────
-        var bg = new GameObject("Background");
-        bg.transform.SetParent(canvasGO.transform, false);
-        var bgImg = bg.AddComponent<Image>();
-        bgImg.color = new Color(0.08f, 0.08f, 0.10f, 0.92f);
-        var bgRect = bg.GetComponent<RectTransform>();
-        bgRect.anchorMin = Vector2.zero;
-        bgRect.anchorMax = Vector2.one;
-        bgRect.offsetMin = bgRect.offsetMax = Vector2.zero;
-
-        // Eight TMP labels ────────────────────────────────────────────────────
-        string[] labelNames =
-        {
-            "Label_Role", "Label_State", "Label_Strikes", "Label_Timer",
-            "Label_Wires", "Label_Button", "Label_Keypad", "Label_Simon"
-        };
-        string[] defaultTexts =
-        {
-            "Role: —", "State: Waiting", "Strikes: [ ][ ][ ]", "Timer: 05:00",
-            "Wires:\n  0 Red   intact\n  1 Blue  intact\n  2 Yel   intact\n  3 Wht   intact\n  4 Blk   intact\n  5 Red   intact",
-            "Button:\n  Colour: —\n  Rule: —",
-            "Keypad:\n  Key 0: —\n  Key 1: —\n  Key 2: —\n  Key 3: —",
-            "Simon:\n  Round: 1\n  Press: —"
-        };
-
-        float totalH = 790f;
-        float rowH   = totalH / labelNames.Length;
-        var labels   = new TextMeshProUGUI[labelNames.Length];
-
-        for (int i = 0; i < labelNames.Length; i++)
-        {
-            var labelGO = new GameObject(labelNames[i]);
-            labelGO.transform.SetParent(canvasGO.transform, false);
-
-            var tmp = labelGO.AddComponent<TextMeshProUGUI>();
-            tmp.text      = defaultTexts[i];
-            tmp.fontSize  = 22f;
-            tmp.color     = Color.white;
-            tmp.alignment = TextAlignmentOptions.TopLeft;
-
-            var rect = labelGO.GetComponent<RectTransform>();
-            // Stack labels from top to bottom inside the canvas
-            float topY = 390f - i * rowH;
-            rect.anchoredPosition = new Vector2(-280f, topY);
-            rect.sizeDelta        = new Vector2(560f, rowH - 4f);
-
-            labels[i] = tmp;
-        }
-
-        // ExpertUIManager component ───────────────────────────────────────────
-        var mgr = canvasGO.AddComponent<ExpertUIManager>();
-        var so  = new SerializedObject(mgr);
-
-        so.FindProperty("labelRole").objectReferenceValue      = labels[0];
-        so.FindProperty("labelGameState").objectReferenceValue = labels[1];
-        so.FindProperty("labelStrikes").objectReferenceValue   = labels[2];
-        so.FindProperty("labelTimer").objectReferenceValue     = labels[3];
-        so.FindProperty("labelWires").objectReferenceValue     = labels[4];
-        so.FindProperty("labelButton").objectReferenceValue    = labels[5];
-        so.FindProperty("labelKeypad").objectReferenceValue    = labels[6];
-        so.FindProperty("labelSimon").objectReferenceValue     = labels[7];
-
-        so.FindProperty("timerModule").objectReferenceValue  = timer;
-        so.FindProperty("wiresModule").objectReferenceValue  = wires;
-        so.FindProperty("buttonModule").objectReferenceValue = button;
-        so.FindProperty("keypadModule").objectReferenceValue = keypad;
-        so.FindProperty("simonModule").objectReferenceValue  = simon;
-
-        so.ApplyModifiedPropertiesWithoutUndo();
-
-        // Starts inactive – KTANEGameManager.OnRoleAssigned activates it
-        canvasGO.SetActive(false);
-
-        Debug.Log("[BuildKTANEScene] Expert UI canvas created and wired.");
+        // ExpertUIManager builds its own World-Space Canvas at runtime (Awake).
+        // No Inspector wiring required — it auto-discovers modules via
+        // FindFirstObjectByType and positions itself at the lobby canvas location.
+        var go = new GameObject("ExpertUI");
+        go.AddComponent<ExpertUIManager>();
+        Debug.Log("[BuildKTANEScene] ExpertUI created (self-building canvas).");
     }
 
     // ── 12 ────────────────────────────────────────────────────────────────────
@@ -532,6 +487,9 @@ public static class BuildKTANEScene
                 btnT != null ? btnT.GetComponent<XRSimpleInteractable>() : null;
             so.FindProperty("buttonLED").objectReferenceValue =
                 ledT != null ? ledT.GetComponent<Renderer>() : null;
+            // Wire buttonRenderer so Configure() can tint the face colour
+            so.FindProperty("buttonRenderer").objectReferenceValue =
+                btnT != null ? btnT.GetComponent<Renderer>() : null;
             so.ApplyModifiedPropertiesWithoutUndo();
         }
 
@@ -569,6 +527,20 @@ public static class BuildKTANEScene
             }
             so.ApplyModifiedPropertiesWithoutUndo();
         }
+
+        // ── Solved indicator lights ───────────────────────────────────────────
+        void WireSolved(string childName, UnityEngine.Object target, string field)
+        {
+            var t = bombRoot.Find(childName);
+            if (t == null || target == null) return;
+            var so = new SerializedObject(target);
+            so.FindProperty(field).objectReferenceValue = t.GetComponent<Renderer>();
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+        WireSolved("Wire_Solved",   wires,  "solvedLight");
+        WireSolved("Button_Solved", button, "solvedLight");
+        WireSolved("Keypad_Solved", keypad, "solvedLight");
+        WireSolved("Simon_Solved",  simon,  "solvedLight");
 
         Debug.Log("[BuildKTANEScene] All module Inspector slots wired automatically.");
     }

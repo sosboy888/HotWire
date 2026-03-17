@@ -92,8 +92,15 @@ namespace KTANE
 
         private List<int> playerInput = new List<int>();
 
+        // Solved indicator LED (wired via Inspector / BuildKTANEScene)
+        [HideInInspector] public Renderer solvedLight;
+        private Material _solvedMat;
+
         // Per-pad material instances
         private Material[] padMats = new Material[4];
+
+        // Tracks whether Configure() was called before Start()
+        private bool _configured = false;
 
         // ----- Ubiq internals -------------------------------------------
         private NetworkContext context;
@@ -117,9 +124,12 @@ namespace KTANE
             }
 
             var gm = KTANEGameManager.Instance;
-            if (gm != null && gm.IsLocalDefuser)
+            if (gm != null && gm.IsLocalDefuser && isActive)
             {
-                GenerateSequence();
+                // Only generate a new sequence if Configure() hasn't already done so.
+                if (!_configured)
+                    GenerateSequence();
+
                 BroadcastState("init", -1);
                 StartCoroutine(PlaySequence(CurrentRound));
             }
@@ -199,12 +209,15 @@ namespace KTANE
                     if (CurrentRound >= totalRounds)
                     {
                         IsSolved = true;
+                        SetSolvedLight(true);
                         gm.SolveModule();
+                        KTANESoundManager.Instance?.PlaySolve();
                         Debug.Log("[SimonModule] All rounds complete – module solved.", this);
                         BroadcastState("press", -1);
                     }
                     else
                     {
+                        KTANESoundManager.Instance?.PlayCorrect();
                         CurrentRound++;
                         playerInput.Clear();
                         BroadcastState("init", -1);
@@ -212,12 +225,17 @@ namespace KTANE
                         StartCoroutine(PlaySequence(CurrentRound));
                     }
                 }
+                else
+                {
+                    KTANESoundManager.Instance?.PlayCorrect();
+                }
             }
             else
             {
                 // Wrong colour → strike and repeat current round
                 playerInput.Clear();
                 gm.AddStrike();
+                KTANESoundManager.Instance?.PlayWrong();
                 Debug.Log("[SimonModule] Wrong colour pressed – strike! Repeating round.", this);
                 BroadcastState("press", -1);
                 StartCoroutine(PlaySequence(CurrentRound));
@@ -230,28 +248,28 @@ namespace KTANE
 
         public void Configure(bool active, int rounds, float flashSpeed, int seed)
         {
-            isActive   = active;
+            isActive    = active;
+            _configured = true;
             totalRounds = rounds;
             flashOnTime = flashSpeed;
 
-            // Show/hide pads
+            // Show/hide pads and solved indicator
             foreach (var pad in padInteractables)
                 if (pad != null) pad.gameObject.SetActive(active);
+            if (solvedLight != null) solvedLight.gameObject.SetActive(active);
 
             if (!active) return;
 
             IsSolved     = false;
             CurrentRound = 1;
             playerInput.Clear();
+            SetSolvedLight(false);
 
             UnityEngine.Random.InitState(seed);
             GenerateSequence();
-            BroadcastState("init", -1);
-
-            // Only the Defuser plays the opening flash
-            var gm = KTANEGameManager.Instance;
-            if (gm != null && gm.IsLocalDefuser)
-                StartCoroutine(PlaySequence(CurrentRound));
+            // BroadcastState and PlaySequence are deferred to Start(), which fires
+            // when the bomb GameObject is activated (bombMount.SetActive(true)).
+            // Calling StartCoroutine here would fail because this GO is still inactive.
 
             Debug.Log($"[SimonModule] Configured: active={active} rounds={rounds} " +
                       $"flash={flashSpeed:F2}s seed={seed}", this);
@@ -330,6 +348,17 @@ namespace KTANE
             {  1,   3,    2,     0  },   // 1 strike
             {  3,   2,    0,     1  },   // 2 strikes
         };
+
+        private void SetSolvedLight(bool on)
+        {
+            if (solvedLight == null) return;
+            if (_solvedMat == null)
+            {
+                _solvedMat = solvedLight.material;
+                _solvedMat.EnableKeyword("_EMISSION");
+            }
+            _solvedMat.SetColor("_EmissionColor", on ? new Color(0f, 2f, 0f) : Color.black);
+        }
 
         private static int MapColour(int physicalColour, int strikes)
         {

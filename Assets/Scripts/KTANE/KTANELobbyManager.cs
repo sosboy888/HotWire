@@ -20,6 +20,8 @@ using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
 using UnityEngine.UI;
+using UnityEngine.EventSystems;
+using UnityEngine.XR.Interaction.Toolkit.UI;
 using TMPro;
 using Ubiq.Messaging;
 using Ubiq.Rooms;
@@ -141,6 +143,10 @@ namespace KTANE
             {
                 StartCoroutine(LaunchGame(msg.selectedLevel, msg.randomSeed));
             }
+            else if (msg.type == "return_to_lobby")
+            {
+                ResetToLobbyState();
+            }
         }
 
         // =====================================================================
@@ -173,28 +179,78 @@ namespace KTANE
         }
 
         // =====================================================================
+        // Public: return to lobby after game over
+        // =====================================================================
+
+        /// <summary>
+        /// Called by ExpertUIManager's game-over buttons.
+        /// Resets game state on all clients and shows the lobby again.
+        /// </summary>
+        public void ReturnToLobby()
+        {
+            ResetToLobbyState();
+            if (!IsSinglePlayer())
+            {
+                BroadcastMsg(new LobbyMessage
+                {
+                    type       = "return_to_lobby",
+                    senderUuid = MyUuid()
+                });
+            }
+        }
+
+        private void ResetToLobbyState()
+        {
+            gameStarted = false;
+            localReady  = false;
+            remoteReady = false;
+
+            KTANEGameManager.Instance?.ResetForNewGame();
+
+            if (bombMount != null)
+                bombMount.gameObject.SetActive(false);
+
+            if (lobbyCanvas != null)
+                lobbyCanvas.SetActive(true);
+
+            RefreshUI();
+        }
+
+        // =====================================================================
         // Private helpers
         // =====================================================================
 
+        private bool IsSinglePlayer() =>
+            roomClient == null || !HasAnyPeer();
+
+        private bool HasAnyPeer()
+        {
+            foreach (var _ in roomClient.Peers) return true;
+            return false;
+        }
+
         private void CheckBothReady()
         {
-            // Only the host (lowest UUID peer) triggers the countdown.
             if (!IsHost()) return;
-            if (!localReady || !remoteReady) return;
             if (gameStarted) return;
+            // Solo: only local READY needed. Multiplayer: both must be ready.
+            if (!localReady) return;
+            if (!IsSinglePlayer() && !remoteReady) return;
 
-            // Kick off a 3-second countdown then start the game.
             int seed = UnityEngine.Random.Range(0, int.MaxValue);
             StartCoroutine(RunCountdown(3f, selectedLevelIndex, seed));
 
-            // Tell the other client to start the same countdown.
-            BroadcastMsg(new LobbyMessage
+            if (!IsSinglePlayer())
             {
-                type          = "start_countdown",
-                senderUuid    = MyUuid(),
-                selectedLevel = selectedLevelIndex,
-                countdown     = 3f
-            });
+                // Tell the other client to start the same countdown.
+                BroadcastMsg(new LobbyMessage
+                {
+                    type          = "start_countdown",
+                    senderUuid    = MyUuid(),
+                    selectedLevel = selectedLevelIndex,
+                    countdown     = 3f
+                });
+            }
 
             // Schedule the actual start message to arrive after the countdown.
             StartCoroutine(SendStartAfterDelay(3f, selectedLevelIndex, seed));
@@ -258,6 +314,7 @@ namespace KTANE
             // Start the actual game
             yield return new WaitForSeconds(0.3f);
             gm?.StartGame();
+            KTANESoundManager.Instance?.PlayReady();
 
             Debug.Log($"[KTANELobbyManager] Game started: {cfg.levelName} seed={seed}");
         }
@@ -319,16 +376,23 @@ namespace KTANE
                 txtDescription.text = cfg.description;
 
             // Player rows
+            bool solo = IsSinglePlayer();
             string myName = $"You ({ShortUuid(MyUuid())})";
-            string theirName = string.IsNullOrEmpty(remoteUuid)
-                ? "Waiting for player 2..."
-                : $"Player 2 ({ShortUuid(remoteUuid)})";
+            string theirName = solo
+                ? "— SOLO MODE —"
+                : (string.IsNullOrEmpty(remoteUuid)
+                    ? "Waiting for player 2..."
+                    : $"Player 2 ({ShortUuid(remoteUuid)})");
 
             if (txtPlayer1 != null)
                 txtPlayer1.text = $"{myName}  —  {(localReady ? "✓ READY" : "Not ready")}";
 
             if (txtPlayer2 != null)
-                txtPlayer2.text = $"{theirName}  —  {(remoteReady ? "✓ READY" : "Not ready")}";
+            {
+                txtPlayer2.text = solo
+                    ? theirName
+                    : $"{theirName}  —  {(remoteReady ? "✓ READY" : "Not ready")}";
+            }
 
             // Ready button label
             if (txtReadyLabel != null)
@@ -336,13 +400,12 @@ namespace KTANE
 
             if (txtStatus != null && !gameStarted)
             {
-                bool bothConnected = !string.IsNullOrEmpty(remoteUuid);
-                if (!bothConnected)
-                    SetStatus("Waiting for second player to join...");
-                else if (localReady && remoteReady)
-                    SetStatus("Both ready! Starting...");
+                if (solo)
+                    SetStatus(localReady ? "Starting solo..." : "Press READY to play solo.");
+                else if (!string.IsNullOrEmpty(remoteUuid))
+                    SetStatus(localReady && remoteReady ? "Both ready! Starting..." : "Both players must press READY.");
                 else
-                    SetStatus("Both players must press READY to begin.");
+                    SetStatus("Waiting for second player to join...");
             }
         }
 
@@ -367,7 +430,7 @@ namespace KTANE
             var canvas       = lobbyCanvas.AddComponent<Canvas>();
             canvas.renderMode = RenderMode.WorldSpace;
             lobbyCanvas.AddComponent<CanvasScaler>();
-            lobbyCanvas.AddComponent<GraphicRaycaster>();
+            lobbyCanvas.AddComponent<TrackedDeviceGraphicRaycaster>();
 
             var rt       = lobbyCanvas.GetComponent<RectTransform>();
             rt.sizeDelta = new Vector2(700f, 900f);

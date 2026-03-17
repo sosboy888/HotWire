@@ -1,243 +1,433 @@
 // ExpertUIManager.cs
-// Read-only heads-up display for the Expert player.
+// Unified in-game HUD and game-over overlay for KTANE.
 //
-// UBIQ NETWORKING PATTERN:
-//   This script does NOT register with the NetworkScene and does NOT send
-//   any messages.  It is a pure consumer: it listens to Unity Events fired
-//   by KTANEGameManager and polls the module scripts once per frame to
-//   refresh the UI labels.  This keeps the Expert UI completely decoupled
-//   from the networking layer – all game state arrives via the modules'
-//   own ProcessMessage callbacks first, and the UI reads it afterwards.
+// Self-builds its World-Space Canvas in Awake() — no Inspector wiring needed.
+// Canvas is positioned at the same world location as the Lobby canvas (0, 1.85, 0)
+// so it seamlessly replaces the lobby UI once the game starts.
 //
-// UNITY SETUP:
-//   1. Create a World Space Canvas as a child of the Expert's camera rig
-//      (or floating in front of the Expert's position).
-//   2. Populate the Text fields listed in the Inspector with UI TextMeshPro
-//      (or legacy Text) components inside that Canvas.
-//   3. In the Expert's XR Rig, set the Canvas "Render Mode" to World Space
-//      and size it comfortably (e.g. 0.6 m × 0.9 m, Scale ~0.001).
-//   4. This GameObject should only be active on the Expert client.
-//      Use KTANEGameManager.OnRoleAssigned to toggle it in a small helper:
+// Panel states:
+//   Waiting   → canvas hidden (lobby is showing)
+//   Active    → GamePanel visible (strike counter, timer, module hints)
+//   Defused / Exploded → GameOverPanel visible (outcome + stats + buttons)
 //
-//        gm.OnRoleAssigned.AddListener(role =>
-//            expertCanvasRoot.SetActive(role == PlayerRole.Expert));
+// Module references are auto-discovered via FindFirstObjectByType in Start()
+// including inactive objects (bomb is hidden in lobby, modules are children of it).
 
 using System.Text;
 using UnityEngine;
-using TMPro;               // remove if using legacy UI.Text
+using UnityEngine.UI;
+using UnityEngine.XR.Interaction.Toolkit.UI;
+using TMPro;
 
 namespace KTANE
 {
     public class ExpertUIManager : MonoBehaviour
     {
-        // ----- Inspector -------------------------------------------------
-        [Header("Panel TextMeshPro labels (assign in Inspector)")]
-        public TextMeshProUGUI labelRole;
-        public TextMeshProUGUI labelGameState;
-        public TextMeshProUGUI labelStrikes;
-        public TextMeshProUGUI labelTimer;
-        public TextMeshProUGUI labelWires;
-        public TextMeshProUGUI labelButton;
-        public TextMeshProUGUI labelKeypad;
-        public TextMeshProUGUI labelSimon;
+        // ── Module refs (auto-discovered in Start) ────────────────────────────
+        private TimerModule   _timer;
+        private WiresModule   _wires;
+        private ButtonModule  _button;
+        private KeypadModule  _keypad;
+        private SimonModule   _simon;
 
-        [Header("Module references (assign in Inspector)")]
-        public TimerModule   timerModule;
-        public WiresModule   wiresModule;
-        public ButtonModule  buttonModule;
-        public KeypadModule  keypadModule;
-        public SimonModule   simonModule;
+        // ── Canvas root and panels ────────────────────────────────────────────
+        private GameObject       _canvas;
+        private GameObject       _gamePanel;
+        private GameObject       _gameOverPanel;
 
-        // ================================================================
+        // ── Game-panel labels ─────────────────────────────────────────────────
+        private TextMeshProUGUI  _lblStrikes;
+        private TextMeshProUGUI  _lblTimer;
+        private TextMeshProUGUI  _lblModules;
+
+        // ── Game-over panel labels ────────────────────────────────────────────
+        private TextMeshProUGUI  _lblOutcome;
+        private TextMeshProUGUI  _lblStats;
+
+        // =====================================================================
         // Unity lifecycle
-        // ================================================================
+        // =====================================================================
+
+        private void Awake()
+        {
+            BuildCanvas();
+        }
 
         private void Start()
         {
+            // Auto-discover modules (bomb GO is initially inactive, so we must
+            // include inactive objects in the search).
+            _timer  = FindFirstObjectByType<TimerModule> (FindObjectsInactive.Include);
+            _wires  = FindFirstObjectByType<WiresModule> (FindObjectsInactive.Include);
+            _button = FindFirstObjectByType<ButtonModule>(FindObjectsInactive.Include);
+            _keypad = FindFirstObjectByType<KeypadModule>(FindObjectsInactive.Include);
+            _simon  = FindFirstObjectByType<SimonModule> (FindObjectsInactive.Include);
+
             var gm = KTANEGameManager.Instance;
-            if (gm == null)
+            if (gm != null)
             {
-                Debug.LogWarning("[ExpertUIManager] KTANEGameManager not found.", this);
-                return;
+                gm.OnGameStarted.AddListener(OnGameStarted);
+                gm.OnBombDefused.AddListener(() => ShowGameOver(true));
+                gm.OnBombExploded.AddListener(() => ShowGameOver(false));
             }
 
-            // Show/hide this panel based on role
-            gm.OnRoleAssigned.AddListener(role =>
-            {
-                gameObject.SetActive(role == PlayerRole.Expert);
-            });
-
-            // Start hidden; will be shown once role is assigned
-            gameObject.SetActive(false);
+            // Hidden at start — lobby canvas is shown during Waiting state.
+            _canvas.SetActive(false);
         }
 
         private void Update()
         {
-            RefreshUI();
-        }
-
-        // ================================================================
-        // UI refresh (runs every frame; only visible on Expert client)
-        // ================================================================
-
-        private void RefreshUI()
-        {
             var gm = KTANEGameManager.Instance;
             if (gm == null) return;
 
-            // ---- Header info ----------------------------------------
-            SetText(labelRole,      $"Role: EXPERT");
-            SetText(labelGameState, $"State: {gm.CurrentState}");
-            SetText(labelStrikes,   BuildStrikesText(gm));
-
-            // ---- Timer ----------------------------------------------
-            if (timerModule != null)
+            // Auto-hide when lobby resets the game back to Waiting.
+            if (gm.CurrentState == GameState.Waiting && _canvas.activeSelf)
             {
-                int mins = timerModule.SecondsRemaining / 60;
-                int secs = timerModule.SecondsRemaining % 60;
-                SetText(labelTimer, $"Timer: {mins:D2}:{secs:D2}");
-            }
-            else
-            {
-                SetText(labelTimer, "Timer: --:--");
+                _canvas.SetActive(false);
+                return;
             }
 
-            // ---- Wires module ---------------------------------------
-            if (wiresModule != null)
-                SetText(labelWires, BuildWiresText(wiresModule));
-            else
-                SetText(labelWires, "Wires: (module not found)");
-
-            // ---- Button module --------------------------------------
-            if (buttonModule != null)
-                SetText(labelButton, BuildButtonText(buttonModule, gm));
-            else
-                SetText(labelButton, "Button: (module not found)");
-
-            // ---- Keypad module --------------------------------------
-            if (keypadModule != null)
-                SetText(labelKeypad, BuildKeypadText(keypadModule));
-            else
-                SetText(labelKeypad, "Keypad: (module not found)");
-
-            // ---- Simon Says module ----------------------------------
-            if (simonModule != null)
-                SetText(labelSimon, BuildSimonText(simonModule, gm));
-            else
-                SetText(labelSimon, "Simon: (module not found)");
+            // Live refresh only while game panel is showing.
+            if (gm.CurrentState == GameState.Active
+                && _canvas.activeSelf
+                && _gamePanel.activeSelf)
+            {
+                RefreshGamePanel(gm);
+            }
         }
 
-        // ================================================================
-        // Text builders
-        // ================================================================
+        // =====================================================================
+        // Event handlers
+        // =====================================================================
 
-        private static string BuildStrikesText(KTANEGameManager gm)
+        private void OnGameStarted()
         {
-            var sb = new StringBuilder("Strikes: ");
-            for (int i = 0; i < gm.MaxStrikes; i++)
-                sb.Append(i < gm.Strikes ? "[X]" : "[ ]");
-            return sb.ToString();
+            _canvas.SetActive(true);
+            _gamePanel.SetActive(true);
+            _gameOverPanel.SetActive(false);
         }
 
-        private static string BuildWiresText(WiresModule wires)
+        private void ShowGameOver(bool defused)
         {
-            // Show each wire's colour and cut state
-            string[] colourNames = new[] { "Red", "Blue", "Yel", "Wht", "Blk", "Red" };
-            var sb = new StringBuilder("--- WIRES ---\n");
+            _canvas.SetActive(true);
+            _gamePanel.SetActive(false);
+            _gameOverPanel.SetActive(true);
+
+            _lblOutcome.text = defused
+                ? "<color=#44FF88>BOMB DEFUSED!</color>"
+                : "<color=#FF4444>BOMB EXPLODED!</color>";
+
+            var gm = KTANEGameManager.Instance;
+            if (gm != null)
+            {
+                int secs = _timer != null ? _timer.SecondsRemaining : 0;
+                _lblStats.text =
+                    $"Strikes: {gm.Strikes} / {gm.MaxStrikes}   " +
+                    $"Time left: {secs / 60:D2}:{secs % 60:D2}";
+            }
+        }
+
+        // =====================================================================
+        // Game-panel refresh (called every frame while Active)
+        // =====================================================================
+
+        private void RefreshGamePanel(KTANEGameManager gm)
+        {
+            // ── Strike indicators ─────────────────────────────────────────────
+            if (_lblStrikes != null)
+            {
+                var sb = new StringBuilder();
+                for (int i = 0; i < gm.MaxStrikes; i++)
+                {
+                    sb.Append(i < gm.Strikes
+                        ? "<color=#FF2222>■</color>"
+                        : "<color=#333333>■</color>");
+                    if (i < gm.MaxStrikes - 1) sb.Append("  ");
+                }
+                _lblStrikes.text = sb.ToString();
+            }
+
+            // ── Timer ─────────────────────────────────────────────────────────
+            if (_lblTimer != null && _timer != null)
+            {
+                int s = _timer.SecondsRemaining;
+                _lblTimer.text = $"{s / 60:D2}:{s % 60:D2}";
+            }
+
+            // ── Module hints ──────────────────────────────────────────────────
+            if (_lblModules != null)
+            {
+                var sb = new StringBuilder();
+                if (_wires  != null) { sb.AppendLine(BuildWiresText(_wires));          }
+                if (_button != null) { sb.AppendLine(BuildButtonText(_button, gm));    }
+                if (_keypad != null) { sb.AppendLine(BuildKeypadText(_keypad));        }
+                if (_simon  != null) { sb.Append    (BuildSimonText(_simon, gm));      }
+                _lblModules.text = sb.ToString();
+            }
+        }
+
+        // =====================================================================
+        // Module text builders
+        // =====================================================================
+
+        private static string BuildWiresText(WiresModule w)
+        {
+            string[] cols = { "Red", "Blue", "Yel", "Wht", "Blk", "Red" };
+            var sb = new StringBuilder("─── WIRES ───\n");
             for (int i = 0; i < 6; i++)
             {
-                bool cut   = wires.WiresCut != null && i < wires.WiresCut.Length && wires.WiresCut[i];
-                string col = i < colourNames.Length ? colourNames[i] : "?";
-                sb.AppendLine($"  Wire {i} ({col}): {(cut ? "CUT" : "intact")}");
+                bool cut = w.WiresCut != null && i < w.WiresCut.Length && w.WiresCut[i];
+                string col = i < cols.Length ? cols[i] : "?";
+                sb.AppendLine($"  {i}: {col}  {(cut ? "<color=#FF4444>CUT</color>" : "intact")}");
             }
-            sb.Append(wires.IsSolved ? "  [SOLVED]" : "  [pending]");
+            sb.Append(w.IsSolved
+                ? "  <color=#44FF88>[SOLVED]</color>"
+                : $"  Cut wire #{w.CorrectWire}");
             return sb.ToString();
         }
 
         private static string BuildButtonText(ButtonModule btn, KTANEGameManager gm)
         {
-            var sb = new StringBuilder("--- BUTTON ---\n");
-            sb.AppendLine($"  Colour: {btn.Colour}");
-            sb.AppendLine($"  Held: {btn.IsHeld}");
-
-            // Hint for the Expert to tell the Defuser
-            sb.AppendLine("  RULE:");
+            var sb = new StringBuilder("─── BUTTON ───\n");
+            sb.AppendLine($"  Colour: {btn.Colour}   Held: {btn.IsHeld}");
             switch (btn.Colour)
             {
                 case ButtonColour.Blue:
-                    sb.AppendLine("    Hold. Release when timer has a 4.");
-                    break;
+                    sb.AppendLine("  Hold → release when timer has 4"); break;
                 case ButtonColour.Red:
-                    sb.AppendLine("    Hold. Release when timer has a 1.");
-                    break;
+                    sb.AppendLine("  Hold → release when timer has 1"); break;
                 default:
-                    sb.AppendLine("    Tap immediately (quick press).");
-                    break;
+                    sb.AppendLine("  Tap immediately (quick press)"); break;
             }
-            sb.Append(btn.IsSolved ? "  [SOLVED]" : "  [pending]");
+            sb.Append(btn.IsSolved
+                ? "  <color=#44FF88>[SOLVED]</color>"
+                : "  [pending]");
             return sb.ToString();
         }
 
         private static string BuildKeypadText(KeypadModule kp)
         {
-            var sb = new StringBuilder("--- KEYPAD ---\n");
+            var sb = new StringBuilder("─── KEYPAD ───\n");
             if (kp.Symbols != null)
-            {
                 for (int i = 0; i < kp.Symbols.Length; i++)
                     sb.AppendLine($"  Key {i}: {kp.Symbols[i]}");
-            }
             if (kp.CorrectOrder != null)
                 sb.AppendLine($"  Press order: {string.Join(" → ", kp.CorrectOrder)}");
-            sb.Append(kp.IsSolved ? "  [SOLVED]" : "  [pending]");
+            sb.Append(kp.IsSolved
+                ? "  <color=#44FF88>[SOLVED]</color>"
+                : "  [pending]");
             return sb.ToString();
         }
 
         private static string BuildSimonText(SimonModule simon, KTANEGameManager gm)
         {
-            var sb = new StringBuilder("--- SIMON ---\n");
-
+            var sb = new StringBuilder("─── SIMON ───\n");
             sb.AppendLine($"  Round: {simon.CurrentRound}");
-
             if (simon.Sequence != null)
             {
-                // Show the sequence for this round with mapped colours
                 string[] names = { "Red", "Blue", "Green", "Yellow" };
-
-                // Colour mapping table indices (rows = strikes, cols = physical col)
-                int[,] map = new int[,]
-                {
-                    { 0, 1, 2, 3 },
-                    { 1, 3, 2, 0 },
-                    { 3, 2, 0, 1 },
-                };
-                int row = Mathf.Clamp(gm.Strikes, 0, 2);
-
                 sb.Append("  Press: ");
                 for (int i = 0; i < simon.CurrentRound && i < simon.Sequence.Length; i++)
                 {
-                    int seq      = simon.Sequence[i];
-                    // Reverse-map: given sequence colour, which physical pad?
-                    // For the Expert hint we show the MAPPED colour they see flashed
-                    sb.Append(names[seq]);
-                    if (i < simon.CurrentRound - 1) sb.Append(" → ");
+                    if (i > 0) sb.Append(" → ");
+                    sb.Append(names[simon.Sequence[i]]);
                 }
                 sb.AppendLine();
-
-                // Show rule reminder
                 sb.AppendLine($"  (Strikes={gm.Strikes}; colour remapped)");
             }
-
-            sb.Append(simon.IsSolved ? "  [SOLVED]" : "  [pending]");
+            sb.Append(simon.IsSolved
+                ? "  <color=#44FF88>[SOLVED]</color>"
+                : "  [pending]");
             return sb.ToString();
         }
 
-        // ================================================================
-        // Utility
-        // ================================================================
+        // =====================================================================
+        // Button callbacks
+        // =====================================================================
 
-        private static void SetText(TextMeshProUGUI label, string text)
+        private void OnPlayAgainClicked()
         {
-            if (label != null) label.text = text;
+            FindFirstObjectByType<KTANELobbyManager>()?.ReturnToLobby();
+        }
+
+        private void OnChooseLevelClicked()
+        {
+            FindFirstObjectByType<KTANELobbyManager>()?.ReturnToLobby();
+        }
+
+        // =====================================================================
+        // Canvas builder (runs in Awake — no scene objects needed yet)
+        // =====================================================================
+
+        private void BuildCanvas()
+        {
+            // Root canvas — 70 cm × 90 cm world-space panel, same position as
+            // the lobby canvas so the two swap seamlessly.
+            _canvas = new GameObject("ExpertCanvas");
+            _canvas.transform.SetParent(transform, false);
+            _canvas.transform.localPosition = new Vector3(0f, 1.85f, 0f);
+            _canvas.transform.localRotation = Quaternion.identity;
+            _canvas.transform.localScale    = Vector3.one * 0.001f;
+
+            var canvasComp = _canvas.AddComponent<Canvas>();
+            canvasComp.renderMode = RenderMode.WorldSpace;
+            _canvas.AddComponent<CanvasScaler>();
+            _canvas.AddComponent<TrackedDeviceGraphicRaycaster>();
+            _canvas.GetComponent<RectTransform>().sizeDelta = new Vector2(700f, 900f);
+
+            _gamePanel     = BuildGamePanel();
+            _gameOverPanel = BuildGameOverPanel();
+            _gameOverPanel.SetActive(false);
+        }
+
+        // ── Game panel ────────────────────────────────────────────────────────
+        private GameObject BuildGamePanel()
+        {
+            var panel = MakeStretchPanel(_canvas.transform, "GamePanel",
+                            new Color(0.05f, 0.05f, 0.08f, 0.95f));
+            AddTopStripe(panel.transform, new Color(0.8f, 0.15f, 0.15f));
+
+            AddTMP(panel.transform, "Title", "EXPERT CONSOLE",
+                   24, FontStyles.Bold, new Color(1f, 0.85f, 0.2f),
+                   TextAlignmentOptions.Center, new Vector2(0f, 415f), new Vector2(680f, 38f));
+
+            _lblStrikes = AddTMP(panel.transform, "Strikes", "■  ■  ■",
+                52, FontStyles.Bold, Color.white,
+                TextAlignmentOptions.Center, new Vector2(0f, 350f), new Vector2(680f, 68f));
+            _lblStrikes.richText = true;
+
+            _lblTimer = AddTMP(panel.transform, "Timer", "05:00",
+                38, FontStyles.Bold, new Color(0.4f, 1f, 0.4f),
+                TextAlignmentOptions.Center, new Vector2(0f, 280f), new Vector2(680f, 52f));
+
+            AddDivider(panel.transform, new Vector2(0f, 250f));
+
+            _lblModules = AddTMP(panel.transform, "Modules", "",
+                17, FontStyles.Normal, new Color(0.85f, 0.85f, 0.85f),
+                TextAlignmentOptions.TopLeft, new Vector2(0f, -100f), new Vector2(660f, 680f));
+            _lblModules.richText = true;
+
+            return panel;
+        }
+
+        // ── Game-over panel ───────────────────────────────────────────────────
+        private GameObject BuildGameOverPanel()
+        {
+            var panel = MakeStretchPanel(_canvas.transform, "GameOverPanel",
+                            new Color(0.04f, 0.04f, 0.06f, 0.98f));
+
+            _lblOutcome = AddTMP(panel.transform, "Outcome", "",
+                56, FontStyles.Bold, Color.white,
+                TextAlignmentOptions.Center, new Vector2(0f, 220f), new Vector2(660f, 130f));
+            _lblOutcome.richText = true;
+
+            _lblStats = AddTMP(panel.transform, "Stats", "",
+                22, FontStyles.Normal, new Color(0.7f, 0.7f, 0.7f),
+                TextAlignmentOptions.Center, new Vector2(0f, 110f), new Vector2(660f, 50f));
+
+            AddDivider(panel.transform, new Vector2(0f, 60f));
+
+            var btnPlay = MakeButton(panel.transform, "BtnPlayAgain",
+                "PLAY AGAIN", new Vector2(0f, -60f), new Vector2(360f, 90f),
+                new Color(0.15f, 0.45f, 0.15f));
+            btnPlay.onClick.AddListener(OnPlayAgainClicked);
+
+            var btnLevel = MakeButton(panel.transform, "BtnChooseLevel",
+                "CHOOSE LEVEL", new Vector2(0f, -190f), new Vector2(360f, 80f),
+                new Color(0.15f, 0.25f, 0.55f));
+            btnLevel.onClick.AddListener(OnChooseLevelClicked);
+
+            return panel;
+        }
+
+        // =====================================================================
+        // Factory helpers
+        // =====================================================================
+
+        private static GameObject MakeStretchPanel(Transform parent, string name, Color colour)
+        {
+            var go  = new GameObject(name);
+            go.transform.SetParent(parent, false);
+            var img = go.AddComponent<Image>();
+            img.color = colour;
+            var rt  = go.GetComponent<RectTransform>();
+            rt.anchorMin = Vector2.zero;
+            rt.anchorMax = Vector2.one;
+            rt.offsetMin = rt.offsetMax = Vector2.zero;
+            return go;
+        }
+
+        private static void AddTopStripe(Transform parent, Color colour)
+        {
+            var go  = new GameObject("Stripe");
+            go.transform.SetParent(parent, false);
+            var img = go.AddComponent<Image>();
+            img.color = colour;
+            var rt  = go.GetComponent<RectTransform>();
+            rt.anchorMin        = new Vector2(0f, 1f);
+            rt.anchorMax        = new Vector2(1f, 1f);
+            rt.pivot            = new Vector2(0.5f, 1f);
+            rt.anchoredPosition = Vector2.zero;
+            rt.sizeDelta        = new Vector2(0f, 6f);
+        }
+
+        private static void AddDivider(Transform parent, Vector2 pos)
+        {
+            var go  = new GameObject("Divider");
+            go.transform.SetParent(parent, false);
+            var img = go.AddComponent<Image>();
+            img.color = new Color(0.3f, 0.3f, 0.3f);
+            var rt  = go.GetComponent<RectTransform>();
+            rt.anchoredPosition = pos;
+            rt.sizeDelta        = new Vector2(660f, 2f);
+        }
+
+        private static TextMeshProUGUI AddTMP(
+            Transform parent, string name, string text,
+            float size, FontStyles style, Color colour,
+            TextAlignmentOptions align, Vector2 pos, Vector2 sizeDelta)
+        {
+            var go  = new GameObject(name);
+            go.transform.SetParent(parent, false);
+            var tmp = go.AddComponent<TextMeshProUGUI>();
+            tmp.text      = text;
+            tmp.fontSize  = size;
+            tmp.fontStyle = style;
+            tmp.color     = colour;
+            tmp.alignment = align;
+            tmp.richText  = true;
+            var rt = go.GetComponent<RectTransform>();
+            rt.anchoredPosition = pos;
+            rt.sizeDelta        = sizeDelta;
+            return tmp;
+        }
+
+        private static Button MakeButton(Transform parent, string name, string label,
+            Vector2 pos, Vector2 size, Color colour)
+        {
+            var go  = new GameObject(name);
+            go.transform.SetParent(parent, false);
+            var img = go.AddComponent<Image>();
+            img.color = colour;
+            var btn = go.AddComponent<Button>();
+            var rt  = go.GetComponent<RectTransform>();
+            rt.anchoredPosition = pos;
+            rt.sizeDelta        = size;
+
+            var lblGO = new GameObject("Label");
+            lblGO.transform.SetParent(go.transform, false);
+            var tmp       = lblGO.AddComponent<TextMeshProUGUI>();
+            tmp.text      = label;
+            tmp.fontSize  = 28;
+            tmp.fontStyle = FontStyles.Bold;
+            tmp.color     = Color.white;
+            tmp.alignment = TextAlignmentOptions.Center;
+            var lrt       = lblGO.GetComponent<RectTransform>();
+            lrt.anchorMin = Vector2.zero;
+            lrt.anchorMax = Vector2.one;
+            lrt.offsetMin = lrt.offsetMax = Vector2.zero;
+
+            return btn;
         }
     }
 }

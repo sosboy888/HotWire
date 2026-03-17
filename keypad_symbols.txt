@@ -1,0 +1,42 @@
+KTANE KEYPAD SYMBOLS — UNICODE REFERENCE
+=========================================
+
+COLUMN TABLE (Manual Col A–F = Code Col 0–5)
+---------------------------------------------
+Row  Col A  Col B  Col C  Col D  Col E  Col F
+ 1     ☆      Ж      ◈      Ʌ      Þ      Ξ
+ 2     ψ      Ħ      ♛      Ŋ      Ð      Φ
+ 3     Θ      ⊕      ∂      Ɋ      ꝏ      ☊
+ 4     Ω      ↩      ⊙      Ʃ      Δ      ℵ
+
+OLD NAME → UNICODE CHARACTER
+-----------------------------
+Hollow Star       →  ☆  (U+2606)
+Greek Psi         →  ψ  (U+03C8)
+Theta / Spiral Eye→  Θ  (U+0398)
+Omega             →  Ω  (U+03A9)
+Forked Rune       →  Ж  (U+0416)
+H-bar / Ladder    →  Ħ  (U+0126)
+Circled Plus      →  ⊕  (U+2295)
+Hooked Arrow      →  ↩  (U+21A9)
+Diamond-in-Diamond→  ◈  (U+25C8)
+Crown / Queen     →  ♛  (U+265B)
+Partial / Swirl   →  ∂  (U+2202)
+Circled Dot       →  ⊙  (U+2299)
+Turned V          →  Ʌ  (U+028C)
+Eng / N-tail      →  Ŋ  (U+014A)
+Q with Hook       →  Ɋ  (U+024A)
+Latin Sigma       →  Ʃ  (U+01A9)
+Thorn             →  Þ  (U+00DE)
+Eth               →  Ð  (U+00D0)
+Double Loop       →  ꝏ  (U+A76F)
+Delta / Triangle  →  Δ  (U+0394)
+Xi / Triple Bar   →  Ξ  (U+039E)
+Phi / Circle-Bar  →  Φ  (U+03A6)
+Ascending Node    →  ☊  (U+260A)
+Aleph             →  ℵ  (U+2135)
+
+NOTE: If keys show blank squares in-game, regenerate the TMP font atlas:
+  Window → TextMeshPro → Font Asset Creator
+  → Character Source: Custom Characters
+  → paste all 24 symbols above → Generate

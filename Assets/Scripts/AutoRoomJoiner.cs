@@ -72,7 +72,19 @@ public class AutoRoomJoiner : MonoBehaviour
             return;
         }
 
-        roomClient = RoomClient.Find(this);
+        // RoomClient.Find traverses the NetworkScene which may not be initialised
+        // yet during OnEnable() — swallow any early NullReferenceException and let
+        // the Start() coroutine retry until the scene is ready.
+        try
+        {
+            roomClient = RoomClient.Find(this);
+        }
+        catch
+        {
+            roomClient = null;
+            return;
+        }
+
         if (roomClient != null)
         {
             roomClient.OnJoinedRoom.AddListener(OnJoinedRoom);

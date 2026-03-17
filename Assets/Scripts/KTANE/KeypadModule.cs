@@ -26,6 +26,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.XR.Interaction.Toolkit;
 using UnityEngine.XR.Interaction.Toolkit.Interactables;
+using TMPro;
 using Ubiq.Messaging;
 
 namespace KTANE
@@ -35,15 +36,22 @@ namespace KTANE
     // -------------------------------------------------------------------------
     public static class KeypadSymbols
     {
-        // 6 columns × 4 symbols each, matching the original KTANE lookup table
+        // 6 columns × 4 symbols each.
+        // Each symbol is a single Unicode character displayed on the physical key
+        // and shown in the Expert UI / manual.
+        //
+        // Manual columns A–F map to code columns 0–5:
+        //   Col A (0): ☆ ψ Θ Ω   Col D (3): Ʌ Ŋ Ɋ Ʃ
+        //   Col B (1): Ж Ħ ⊕ ↩   Col E (4): Þ Ð ꝏ Δ
+        //   Col C (2): ◈ ♛ ∂ ⊙   Col F (5): Ξ Φ ☊ ℵ
         public static readonly string[][] Columns = new string[][]
         {
-            new[] { "Q", "W", "E", "R" },   // Column 0
-            new[] { "T", "Y", "U", "I" },   // Column 1
-            new[] { "O", "P", "A", "S" },   // Column 2
-            new[] { "D", "F", "G", "H" },   // Column 3
-            new[] { "J", "K", "L", "Z" },   // Column 4
-            new[] { "X", "C", "V", "B" },   // Column 5
+            new[] { "☆", "ψ", "Θ", "Ω" },   // Column 0 — Manual Col A
+            new[] { "Ж", "Ħ", "⊕", "↩" },   // Column 1 — Manual Col B
+            new[] { "◈", "♛", "∂", "⊙" },   // Column 2 — Manual Col C
+            new[] { "Ʌ", "Ŋ", "Ɋ", "Ʃ" },   // Column 3 — Manual Col D
+            new[] { "Þ", "Ð", "ꝏ", "Δ" },   // Column 4 — Manual Col E
+            new[] { "Ξ", "Φ", "☊", "ℵ" },   // Column 5 — Manual Col F
         };
     }
 
@@ -79,8 +87,16 @@ namespace KTANE
         public int[]    CorrectOrder { get; private set; } = new int[4];
         public bool     IsSolved     { get; private set; }
 
+        // Solved indicator LED (wired via Inspector / BuildKTANEScene)
+        [HideInInspector] public Renderer solvedLight;
+        private Material _solvedMat;
+
         private List<int> pressedOrder = new List<int>();
         private XRSimpleInteractable[] keyInteractables = new XRSimpleInteractable[4];
+        private TextMeshPro[] keyLabels = new TextMeshPro[4];
+
+        // Tracks whether Configure() was called before Start()
+        private bool _configured = false;
 
         // ----- Ubiq internals -------------------------------------------
         private NetworkContext context;
@@ -93,12 +109,8 @@ namespace KTANE
         {
             context = NetworkScene.Register(this);
 
-            var gm = KTANEGameManager.Instance;
-            if (gm != null && gm.IsLocalDefuser)
-            {
-                GenerateKeypad();
-                BroadcastState("init", false, -1);
-            }
+            // Build per-key TMP labels so the player can see each symbol
+            CreateKeyLabels();
 
             // Wire up XR interactables
             for (int i = 0; i < keyObjects.Length; i++)
@@ -114,6 +126,17 @@ namespace KTANE
                 keyInteractables[i] = xi;
                 int capturedIndex = i;
                 xi.selectEntered.AddListener(_ => OnKeyPressed(capturedIndex));
+            }
+
+            var gm = KTANEGameManager.Instance;
+            if (gm != null && gm.IsLocalDefuser)
+            {
+                // Only generate if Configure() hasn't already set the symbols.
+                if (!_configured)
+                    GenerateKeypad();
+
+                UpdateKeyLabels();
+                BroadcastState("init", false, -1);
             }
         }
 
@@ -169,12 +192,15 @@ namespace KTANE
                 if (pressedOrder.Count == CorrectOrder.Length)
                 {
                     IsSolved = true;
+                    SetSolvedLight(true);
                     gm.SolveModule();
+                    KTANESoundManager.Instance?.PlaySolve();
                     Debug.Log("[KeypadModule] Correct sequence – module solved.", this);
                     BroadcastState("press", false, keyIndex);
                 }
                 else
                 {
+                    KTANESoundManager.Instance?.PlayCorrect();
                     BroadcastState("press", false, keyIndex);
                 }
             }
@@ -183,6 +209,7 @@ namespace KTANE
                 // Wrong key → strike and reset current sequence progress
                 pressedOrder.Clear();
                 gm.AddStrike();
+                KTANESoundManager.Instance?.PlayWrong();
                 Debug.Log($"[KeypadModule] Wrong key pressed (pressed {keyIndex}, expected {expectedKey}) – strike!", this);
                 BroadcastState("press", true, keyIndex);
             }
@@ -194,25 +221,69 @@ namespace KTANE
 
         public void Configure(bool active, int seed)
         {
-            isActive = active;
+            isActive    = active;
+            _configured = true;
 
             foreach (var key in keyObjects)
                 if (key != null) key.SetActive(active);
+            if (solvedLight != null) solvedLight.gameObject.SetActive(active);
 
             if (!active) return;
 
             IsSolved = false;
             pressedOrder.Clear();
+            SetSolvedLight(false);
 
             UnityEngine.Random.InitState(seed);
             GenerateKeypad();
-            BroadcastState("init", false, -1);
+            // Labels and broadcast happen from Start() once context is registered.
             Debug.Log($"[KeypadModule] Configured: active={active} seed={seed}", this);
         }
 
         // ================================================================
         // Private helpers
         // ================================================================
+
+        // Create world-space TMP labels on each key face so the Defuser can see symbols.
+        private void CreateKeyLabels()
+        {
+            for (int i = 0; i < keyObjects.Length; i++)
+            {
+                if (keyObjects[i] == null) continue;
+
+                // Re-use existing label if already created
+                var existing = keyObjects[i].transform.Find("SymbolLabel");
+                if (existing != null)
+                {
+                    keyLabels[i] = existing.GetComponent<TextMeshPro>();
+                    continue;
+                }
+
+                var go = new GameObject("SymbolLabel");
+                go.transform.SetParent(keyObjects[i].transform, false);
+                go.transform.localPosition = new Vector3(0f, 0f, -0.012f); // face of key
+                go.transform.localRotation = Quaternion.identity;
+                go.transform.localScale    = Vector3.one * 0.08f;
+
+                var tmp       = go.AddComponent<TextMeshPro>();
+                tmp.fontSize  = 8;
+                tmp.fontStyle = FontStyles.Bold;
+                tmp.color     = Color.white;
+                tmp.alignment = TextAlignmentOptions.Center;
+                tmp.GetComponent<RectTransform>().sizeDelta = new Vector2(2f, 2f);
+
+                keyLabels[i] = tmp;
+            }
+        }
+
+        private void UpdateKeyLabels()
+        {
+            for (int i = 0; i < keyLabels.Length; i++)
+            {
+                if (keyLabels[i] != null && Symbols != null && i < Symbols.Length)
+                    keyLabels[i].text = Symbols[i];
+            }
+        }
 
         private void GenerateKeypad()
         {
@@ -280,6 +351,17 @@ namespace KTANE
             e = 0f;
             while (e < dur)  { e += Time.deltaTime; t.localScale = Vector3.Lerp(pressed, orig, e / dur); yield return null; }
             t.localScale = orig;
+        }
+
+        private void SetSolvedLight(bool on)
+        {
+            if (solvedLight == null) return;
+            if (_solvedMat == null)
+            {
+                _solvedMat = solvedLight.material;
+                _solvedMat.EnableKeyword("_EMISSION");
+            }
+            _solvedMat.SetColor("_EmissionColor", on ? new Color(0f, 2f, 0f) : Color.black);
         }
 
         private static void Shuffle<T>(List<T> list)

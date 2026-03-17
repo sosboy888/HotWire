@@ -97,6 +97,18 @@ namespace KTANE
             _instance = this;
         }
 
+        // True when no RoomClient exists OR when alone in the room.
+        public bool IsSinglePlayer
+        {
+            get
+            {
+                if (roomClient == null) return true;
+                int count = 0;
+                foreach (var _ in roomClient.Peers) count++;
+                return count == 0;
+            }
+        }
+
         private void Start()
         {
             // Register with Ubiq's NetworkScene so peers can exchange messages.
@@ -108,10 +120,15 @@ namespace KTANE
                 roomClient.OnPeerAdded.AddListener(_   => ReevaluateRoles());
                 roomClient.OnPeerRemoved.AddListener(_ => ReevaluateRoles());
                 roomClient.OnJoinedRoom.AddListener(_  => ReevaluateRoles());
+                // Evaluate now so solo mode gets Defuser role before the user
+                // interacts, even if the room hasn't been joined yet.
+                ReevaluateRoles();
             }
             else
             {
-                Debug.LogWarning("[KTANEGameManager] No RoomClient found in scene.", this);
+                // No networking — immediately become the Defuser.
+                Debug.Log("[KTANEGameManager] No RoomClient — running in single-player mode.", this);
+                ForceSoloRole();
             }
         }
 
@@ -136,6 +153,9 @@ namespace KTANE
         /// <summary>Start the game. Call from a lobby button on the Defuser client.</summary>
         public void StartGame()
         {
+            // In single player the role may still be Unassigned if the room hasn't
+            // been entered yet — promote to Defuser on the spot.
+            if (IsSinglePlayer && LocalRole == PlayerRole.Unassigned) ForceSoloRole();
             if (!IsLocalDefuser || CurrentState != GameState.Waiting) return;
             ApplyState(GameState.Active, 0, 0);
             BroadcastState();
@@ -191,6 +211,15 @@ namespace KTANE
             ApplyState(GameState.Defused, Strikes, ModulesSolved);
             BroadcastState();
             OnBombDefused?.Invoke();
+        }
+
+        /// <summary>
+        /// Reset game state to Waiting without broadcasting.
+        /// Called by KTANELobbyManager on both clients when returning to lobby.
+        /// </summary>
+        public void ResetForNewGame()
+        {
+            ApplyState(GameState.Waiting, 0, 0);
         }
 
         // ================================================================
@@ -261,9 +290,24 @@ namespace KTANE
         // conclusion, so no extra network message is needed for roles – but
         // we also broadcast for late-joining peers.
         // ----------------------------------------------------------------
+        private void ForceSoloRole()
+        {
+            defuserUuid = "solo";
+            if (LocalRole != PlayerRole.Defuser)
+            {
+                LocalRole = PlayerRole.Defuser;
+                Debug.Log("[KTANEGameManager] Single-player: assigned Defuser role.", this);
+                OnRoleAssigned?.Invoke(LocalRole);
+            }
+        }
+
         private void ReevaluateRoles()
         {
-            if (roomClient == null || roomClient.Me == null) return;
+            if (roomClient == null || roomClient.Me == null)
+            {
+                ForceSoloRole();
+                return;
+            }
 
             string myUuid  = roomClient.Me.uuid;
             string minUuid = myUuid;
