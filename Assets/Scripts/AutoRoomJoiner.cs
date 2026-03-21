@@ -133,6 +133,13 @@ public class AutoRoomJoiner : MonoBehaviour
         {
             var bytes = Encoding.UTF8.GetBytes(input ?? string.Empty);
             var hash = md5.ComputeHash(bytes);
+
+            // Force RFC 4122 v4 bits so Ubiq's server accepts the UUID.
+            // Byte 6 holds version in the high nibble → set to 0x40 (v4).
+            hash[6] = (byte)((hash[6] & 0x0F) | 0x40);
+            // Byte 8 holds the variant in the top two bits → set to 0b10xxxxxx.
+            hash[8] = (byte)((hash[8] & 0x3F) | 0x80);
+
             return new Guid(hash);
         }
     }
